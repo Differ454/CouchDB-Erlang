@@ -1,0 +1,5 @@
+%{
+  # This file can be used to exclude tests that are not otherwise excluded
+  # via a :pending, :skip, or :skip_on_jenkins tag in the test codebase.
+  # The format is the same as the `suite.elixir` file.
+}

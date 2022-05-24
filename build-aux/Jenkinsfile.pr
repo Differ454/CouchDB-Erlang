@@ -1,0 +1,144 @@
+#!groovy
+//
+//
+// Licensed under the Apache License, Version 2.0 (the "License"); you may not
+// use this file except in compliance with the License. You may obtain a copy of
+// the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+// WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+// License for the specific language governing permissions and limitations under
+// the License.
+
+pipeline {
+
+  // no top-level agent; agents must be declared for each stage
+  agent none
+
+  environment {
+    COUCHAUTH = credentials('couchdb_vm2_couchdb')
+    recipient = 'notifications@couchdb.apache.org'
+    COUCHDB_IO_LOG_DIR = '/tmp/couchjslogs'
+    // Following fix an issue with git <= 2.6.5 where no committer
+    // name or email are present for reflog, required for git clone
+    GIT_COMMITTER_NAME = 'Jenkins User'
+    GIT_COMMITTER_EMAIL = 'couchdb@apache.org'
+    // Parameters for the matrix build
+    DOCKER_IMAGE_BASE = 'apache/couchdbci-debian:erlang'
+    // https://github.com/jenkins-infra/jenkins.io/blob/master/Jenkinsfile#64
+    // We need the jenkins user mapped inside of the image
+    // npm config cache below deals with /home/jenkins not mapping correctly
+    // inside the image
+    DOCKER_ARGS = '-e npm_config_cache=npm-cache -e HOME=. -v=/etc/passwd:/etc/passwd -v /etc/group:/etc/group'
+
+    // *** BE SURE TO ALSO CHANGE THE ERLANG VERSIONS FARTHER DOWN ***
+    // Search for ERLANG_VERSION
+    // see https://issues.jenkins.io/browse/JENKINS-61047 for why this cannot
+    // be done parametrically
+    MINIMUM_ERLANG_VERSION = '21'
+
+    // Ensure that the SpiderMonkey version is appropriate for the $DOCKER_IMAGE
+    SM_VSN = '78'
+  }
+
+  options {
+    buildDiscarder(logRotator(numToKeepStr: '10', artifactNumToKeepStr: '10'))
+    // This fails the build immediately if any parallel step fails
+    parallelsAlwaysFailFast()
+    preserveStashes(buildCount: 10)
+    timeout(time: 3, unit: 'HOURS')
+    timestamps()
+  }
+
+  stages {
+    stage('Build Release Tarball') {
+      agent {
+        docker {
+          image "${DOCKER_IMAGE_BASE}-${MINIMUM_ERLANG_VERSION}"
+          label 'docker'
+          args "${DOCKER_ARGS}"
+          registryUrl 'https://docker.io/'
+          registryCredentialsId 'dockerhub_creds'
+        }
+      }
+      steps {
+        timeout(time: 15, unit: "MINUTES") {
+          sh( script: 'rm -rf apache-couchdb-*', label: 'Clean out workspace' )
+          sh( script: './configure', label: 'Retrieve dependencies and configure build system' )
+          sh( script: 'make erlfmt-check', label: 'Verify Erlang coding style' )
+          sh( script: 'make elixir-check-formatted', label: 'Verify Elixir coding style' )
+          sh( script: 'make dist', label: 'Build self-contained release' )
+        }
+      }
+      post {
+        success {
+          stash includes: 'apache-couchdb-*.tar.gz', name: 'release-tarball'
+        }
+        cleanup {
+          // UGH see https://issues.jenkins-ci.org/browse/JENKINS-41894
+          sh( script: 'rm -rf ${WORKSPACE}/*', label: 'Clean up after ourselves' )
+        }
+      }
+    } // stage Build Release Tarball
+
+    stage('Make Check') {
+      matrix {
+        axes {
+          axis {
+            name 'ERLANG_VERSION'
+            values '21', '22', '23', '24'
+          }
+        }
+
+        stages {
+          stage('Build and Test') {
+            agent {
+              docker {
+                image "${DOCKER_IMAGE_BASE}-${ERLANG_VERSION}"
+                label 'docker'
+                args "${DOCKER_ARGS}"
+              }
+            }
+            options {
+              skipDefaultCheckout()
+            }
+            steps {
+              timeout(time: 90, unit: "MINUTES") {
+                echo "Building CouchDB PR using Erlang ${ERLANG_VERSION} and SpiderMonkey ${SM_VSN}"
+                sh( script: "rm -rf build-${ERLANG_VERSION} apache-couchdb-*", label: 'Clean out workspace' )
+                unstash 'release-tarball'
+                sh( script: "mkdir -p ${COUCHDB_IO_LOG_DIR} build-${ERLANG_VERSION}" )
+                sh( script: "tar -xf apache-couchdb-*.tar.gz -C build-${ERLANG_VERSION} --strip-components=1", label: 'Unpack release' )
+                dir( "build-${ERLANG_VERSION}" ) {
+                  sh( script: './configure --skip-deps', label: 'Configure CouchDB build system' )
+                  sh( script: 'make', label: 'Build CouchDB' )
+                  sh( script: 'make eunit', label: 'EUnit test suite' )
+                  sh( script: 'make elixir-suite', label: 'ExUnit unit test suite' )
+                  sh( script: 'make exunit', label: 'ExUnit integration test suite' )
+                  sh( script: 'make mango-test', label: 'Python-based Mango query test suite' )
+                }
+              }
+            }
+            post {
+              always {
+                junit '**/.eunit/*.xml, **/_build/*/lib/couchdbtest/*.xml, **/src/mango/nosetests.xml, **/test/javascript/junit.xml'
+              }
+              failure {
+                dir( "build-${ERLANG_VERSION}" ) {
+                  sh 'ls -l'
+                  sh 'make build-report'
+                }
+              }
+              cleanup {
+                sh 'rm -rf ${WORKSPACE}/* ${COUCHDB_IO_LOG_DIR}'
+              }
+            }
+          } // stage "Build and Test"
+        } // stages
+      } // matrix
+    } // stage "Make Check"
+  } // stages
+} // pipeline

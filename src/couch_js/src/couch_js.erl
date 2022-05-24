@@ -1,0 +1,76 @@
+% Licensed under the Apache License, Version 2.0 (the "License"); you may not
+% use this file except in compliance with the License. You may obtain a copy of
+% the License at
+%
+%   http://www.apache.org/licenses/LICENSE-2.0
+%
+% Unless required by applicable law or agreed to in writing, software
+% distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+% WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+% License for the specific language governing permissions and limitations under
+% the License.
+
+-module(couch_js).
+-behavior(couch_eval).
+
+-export([
+    acquire_map_context/1,
+    release_map_context/1,
+    map_docs/2,
+    acquire_context/0,
+    release_context/1,
+    try_compile/4,
+    validate_doc_update/5,
+    filter_view/3,
+    filter_docs/5
+]).
+
+-include_lib("couch/include/couch_db.hrl").
+
+-define(JS, <<"javascript">>).
+
+acquire_map_context(Opts) ->
+    #{
+        map_funs := MapFuns,
+        lib := Lib
+    } = Opts,
+    couch_js_query_servers:start_doc_map(?JS, MapFuns, Lib).
+
+release_map_context(Proc) ->
+    couch_js_query_servers:stop_doc_map(Proc).
+
+map_docs(Proc, Docs) ->
+    {ok,
+        lists:map(
+            fun(Doc) ->
+                {ok, RawResults} = couch_js_query_servers:map_doc_raw(Proc, Doc),
+                Results = couch_js_query_servers:raw_to_ejson(RawResults),
+                Tupled = lists:map(
+                    fun(ViewResult) ->
+                        lists:map(fun([K, V]) -> {K, V} end, ViewResult)
+                    end,
+                    Results
+                ),
+                {Doc#doc.id, Tupled}
+            end,
+            Docs
+        )}.
+
+acquire_context() ->
+    Ctx = couch_query_servers:get_os_process(?JS),
+    {ok, Ctx}.
+
+release_context(Proc) ->
+    couch_query_servers:ret_os_process(Proc).
+
+try_compile(Proc, FunctionType, FunName, FunSrc) ->
+    couch_query_servers:try_compile(Proc, FunctionType, FunName, FunSrc).
+
+validate_doc_update(DDoc, EditDoc, DiskDoc, Ctx, SecObj) ->
+    couch_query_servers:validate_doc_update(DDoc, EditDoc, DiskDoc, Ctx, SecObj).
+
+filter_view(DDoc, VName, Docs) ->
+    couch_query_servers:filter_view(DDoc, VName, Docs).
+
+filter_docs(Req, Db, DDoc, FName, Docs) ->
+    couch_query_servers:filter_docs(Req, Db, DDoc, FName, Docs).

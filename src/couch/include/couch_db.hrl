@@ -1,0 +1,183 @@
+% Licensed under the Apache License, Version 2.0 (the "License"); you may not
+% use this file except in compliance with the License. You may obtain a copy of
+% the License at
+%
+%   http://www.apache.org/licenses/LICENSE-2.0
+%
+% Unless required by applicable law or agreed to in writing, software
+% distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+% WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+% License for the specific language governing permissions and limitations under
+% the License.
+
+-define(LOCAL_DOC_PREFIX, "_local/").
+-define(DESIGN_DOC_PREFIX0, "_design").
+-define(DESIGN_DOC_PREFIX, "_design/").
+
+-define(MIN_STR, <<"">>).
+-define(MAX_STR, <<255>>). % illegal utf string
+
+-define(JSON_ENCODE(V), couch_util:json_encode(V)).
+-define(JSON_DECODE(V), couch_util:json_decode(V)).
+
+-define(b2l(V), binary_to_list(V)).
+-define(l2b(V), list_to_binary(V)).
+-define(i2b(V), couch_util:integer_to_boolean(V)).
+-define(b2i(V), couch_util:boolean_to_integer(V)).
+-define(term_to_bin(T), term_to_binary(T, [{minor_version, 1}])).
+-define(term_size(T), erlang:external_size(T, [{minor_version, 1}])).
+
+-define(DEFAULT_ATTACHMENT_CONTENT_TYPE, <<"application/octet-stream">>).
+
+-define(ADMIN_USER, #user_ctx{roles=[<<"_admin">>]}).
+-define(ADMIN_CTX, {user_ctx, ?ADMIN_USER}).
+
+-define(SYSTEM_DATABASES, [
+    <<"_dbs">>,
+    <<"_metadata">>,
+    <<"_nodes">>,
+    <<"_replicator">>,
+    <<"_users">>
+]).
+
+-define(DOCUMENT_SIZE_LIMIT_BYTES, 8000000).
+-define(ATT_SIZE_LIMIT_BYTES, 8000000).
+-define(DOC_ID_LIMIT_BYTES, 512).
+
+-type branch() :: {Key::term(), Value::term(), Tree::term()}.
+-type path() :: {Start::pos_integer(), branch()}.
+-type update_type() :: replicated_changes | interactive_edit.
+
+-record(rev_info, {
+    rev,
+    seq = 0,
+    deleted = false,
+    body_sp = nil % stream pointer
+}).
+
+-record(doc_info, {
+    id = <<"">>,
+    high_seq = 0,
+    revs = [] % rev_info
+}).
+
+-record(size_info, {
+    active = 0,
+    external = 0
+}).
+
+-record(full_doc_info, {
+    id = <<"">>,
+    update_seq = 0,
+    deleted = false,
+    rev_tree = [],
+    sizes = #size_info{}
+}).
+
+-record(httpd, {
+    mochi_req,
+    peer,
+    method,
+    requested_path_parts,
+    path_parts,
+    db_url_handlers,
+    user_ctx,
+    req_body = undefined,
+    design_url_handlers,
+    auth,
+    default_fun,
+    url_handlers,
+    authentication_handlers = [],
+    absolute_uri,
+    auth_module,
+    begin_ts,
+    original_method,
+    nonce,
+    cors_config,
+    xframe_config,
+    qs
+}).
+
+
+-record(doc, {
+    id = <<"">>,
+    revs = {0, []},
+
+    % the json body object.
+    body = {[]},
+
+    % Atts can be a binary when a storage engine
+    % returns attachment info blob in compressed
+    % form.
+    atts = [] :: [couch_att:att()] | binary(), % attachments
+
+    deleted = false,
+
+    % key/value tuple of meta information, provided when using special options:
+    % couch_db:open_doc(Db, Id, Options).
+    meta = []
+}).
+
+
+-record(user_ctx, {
+    name=null,
+    roles=[],
+    handler
+}).
+
+-record(extern_resp_args, {
+    code = 200,
+    stop = false,
+    data = <<>>,
+    ctype = "application/json",
+    headers = [],
+    json = nil
+}).
+
+% small value used in revision trees to indicate the revision isn't stored
+-define(REV_MISSING, []).
+
+-record(changes_args, {
+    feed = "normal",
+    dir = fwd,
+    since = 0,
+    limit = 1000000000000000,
+    style = main_only,
+    heartbeat,
+    timeout,
+    filter = "",
+    filter_fun,
+    filter_args = [],
+    include_docs = false,
+    doc_options = [],
+    conflicts = false,
+    db_open_options = []
+}).
+
+-record(proc, {
+    pid,
+    lang,
+    client = nil,
+    ddoc_keys = [],
+    prompt_fun,
+    set_timeout_fun,
+    stop_fun
+}).
+
+-record(leaf,  {
+    deleted,
+    ptr,
+    seq,
+    sizes = #size_info{},
+    atts = []
+}).
+
+-type doc() :: #doc{}.
+-type ddoc() :: #doc{}.
+-type user_ctx() :: #user_ctx{}.
+-type sec_props() :: [tuple()].
+-type sec_obj() :: {sec_props()}.
+
+
+-define(record_to_keyval(Name, Record),
+    lists:zip(record_info(fields, Name), tl(tuple_to_list(Record)))).
